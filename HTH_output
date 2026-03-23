@@ -1,0 +1,27 @@
+Image size distribution:
+
+898 x 898 : 23 images
+900 x 900 : 327 images
+902 x 902 : 80 images
+904 x 904 : 81 images
+906 x 906 : 15 images
+908 x 908 : 1 images
+1370 x 1370 : 2 images
+1372 x 1372 : 62 images
+1374 x 1374 : 178 images
+1376 x 1376 : 114 images
+1378 x 1378 : 94 images
+1380 x 1380 : 104 images
+1382 x 1382 : 42 images
+1384 x 1384 : 13 images
+1386 x 1386 : 5 images
+1388 x 1388 : 1 images
+1440 x 1440 : 7 images
+1442 x 1442 : 31 images
+1444 x 1444 : 193 images
+1446 x 1446 : 277 images
+1448 x 1448 : 74 images
+1450 x 1450 : 19 images
+1452 x 1452 : 2 images
+Found 1745 images.
+Data Matrix H shape: torch.Size([1745, 1745]) tensor(2007320., device='cuda:0') tensor(90275.6562, device='cuda:0')
