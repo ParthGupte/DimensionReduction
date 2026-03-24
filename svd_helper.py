@@ -223,9 +223,11 @@ def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix=""):
     
     explained_variance_ratio = eigenvalues / total_variance
     cumulative_variance = np.cumsum(explained_variance_ratio)
-    
+
     # 3. Select k
     k_components = np.searchsorted(cumulative_variance, variance_cutoff) + 1
+
+    fro_norm_error = np.sum(eigenvalues[k_components:])
     
     print(f"--- Eigenvalue Analysis {title_suffix} ---")
     print(f"Total Eigenvalues: {len(eigenvalues)}")
@@ -233,6 +235,7 @@ def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix=""):
     print(f"Variance cutoff (1 - beta): {variance_cutoff:.2%}")
     print(f"Components to keep: {k_components}")
     print(f"Actual Variance Explained: {cumulative_variance[k_components-1]:.2%}")
+    print(f"Frobenius Norm Error: {fro_norm_error}")
     print("-" * 40)
 
     # 4. Plot
@@ -270,3 +273,43 @@ def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix=""):
     plt.savefig(f"{title_suffix}.png")
     
     return k_components, eigenvalues[:k_components], cumulative_variance[k_components-1]
+
+
+def compute_projection_Z(eigenvalues, eigenvectors, k):
+    """
+    Computes the reduced representation Z from eigenvalues and eigenvectors
+    of H^T H.
+
+    Parameters
+    ----------
+    eigenvalues : np.ndarray
+        Array of eigenvalues (length n).
+    eigenvectors : np.ndarray
+        Matrix of eigenvectors (n x n), columns are eigenvectors.
+    k : int
+        Number of principal components to keep.
+
+    Returns
+    -------
+    Z : np.ndarray
+        Reduced representation (k x n).
+    """
+
+    # sort eigenvalues descending
+    eigenvalues = np.array(eigenvalues.cpu())
+    eigenvectors = np.array(eigenvectors.cpu())
+    idx = np.argsort(eigenvalues)[::-1]
+
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+
+    # take top-k
+    lambda_k = eigenvalues[:k]
+    V_k = eigenvectors[:, :k]
+
+    # compute Z = sqrt(Λ_k) V_k^T
+    Z = np.sqrt(lambda_k)[:, None] * V_k.T
+
+    Z = torch.from_numpy(Z)
+
+    return Z
