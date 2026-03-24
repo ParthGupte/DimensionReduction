@@ -22,13 +22,30 @@ HTH_cor = sigma_inv[:,None] * HTH_cov * sigma_inv[None,:]
 
 eigenvalues_raw, eigenvectors_raw = torch.linalg.eigh(HTH)
 
-analyze_precomputed_eigenvalues(eigenvalues_raw,title_suffix="RawMoments")
+torch.save(eigenvectors_raw,"saved_matrices/eigenvectors_raw.pt")
+
+k_raw, _, _ = analyze_precomputed_eigenvalues(eigenvalues_raw,title_suffix="RawMoments")
+
+Z_raw = compute_projection_Z(eigenvalues_raw,eigenvectors_raw,k_raw)
+
+torch.save(Z_raw,"saved_matrices/Z_raw.pt")
 
 eigenvalues_cov, eigenvectors_cov = torch.linalg.eigh(HTH_cov)
 
-analyze_precomputed_eigenvalues(eigenvalues_cov,title_suffix="Covariance")
+torch.save(eigenvectors_cov,"saved_matrices/eigenvectors_cov.pt")
+
+k_cov, _, _ = analyze_precomputed_eigenvalues(eigenvalues_cov,title_suffix="Covariance")
+
+Z_cov = compute_projection_Z(eigenvalues_cov,eigenvectors_cov,k_cov)
+
+torch.save(Z_cov,"saved_matrices/Z_cov.pt")
 
 eigenvalues_cor, eigenvectors_cor = torch.linalg.eigh(HTH_cor)
 
-analyze_precomputed_eigenvalues(eigenvalues_cor,title_suffix="Correlation")
+torch.save(eigenvectors_cor,"saved_matrices/eigenvectors_cor.pt")
 
+k_cor,_,_ = analyze_precomputed_eigenvalues(eigenvalues_cor,title_suffix="Correlation")
+
+Z_cor = compute_projection_Z(eigenvalues_cor,eigenvectors_cor,k_cor)
+
+torch.save(Z_cor,"saved_matrices/Z_cor.pt")
