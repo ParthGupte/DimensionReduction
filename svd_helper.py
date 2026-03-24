@@ -170,6 +170,30 @@ def standardize_rows_batchwise_torch(X_centered, num_batches=10, eps=1e-8):
 
     return X_standardized, row_std
 
+import csv
+
+def save_list_to_csv(data, filename):
+    """
+    Saves a list to a CSV file.
+
+    Parameters:
+    data : list
+        List of values or list of lists.
+    filename : str
+        Output CSV file path.
+    """
+    
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        
+        # If it's a list of lists → write rows
+        if isinstance(data[0], (list, tuple)):
+            writer.writerows(data)
+        else:
+            # Single list → write one column
+            for item in data:
+                writer.writerow([item])
+
 def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix=""):
     """
     Performs scree analysis on precomputed eigenvalues.
@@ -186,6 +210,7 @@ def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix=""):
     # 1. Sort eigenvalues (descending)
     eigenvalues = np.array(eigenvalues.cpu())
     eigenvalues = np.sort(eigenvalues)[::-1]
+    save_list_to_csv(eigenvalues,f"eigenvalues_{title_suffix}.csv")
     
     # Remove tiny negative values due to numerical noise
     eigenvalues[eigenvalues < 0] = 0
