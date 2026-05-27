@@ -3,3 +3,13 @@ lakshmi
 .venv
 __pycache__
 saved_matrices
+reconstructed_cor
+reconstructed_cov
+reconstructed_raw
+original_images
+reconstructed_cor_95
+reconstructed_cov_95
+reconstructed_raw_95
+reconstructed_cor_90
+reconstructed_cov_90
+reconstructed_raw_90

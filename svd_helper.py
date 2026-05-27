@@ -27,23 +27,85 @@ def count_image_sizes(image_dir):
     return size_counter, failed_images
 
 def show_padded_image(img_padded, title="Padded Image"):
+
     """
-    Displays a padded NumPy image array (grayscale or RGB).
+    Displays a padded torch image tensor.
+    Supports:
+        (H,W)
+        (C,H,W)
     """
+
+    img = img_padded.detach().cpu()
+
+    # --------------------------------------------------------
+    # CHW -> HWC
+    # --------------------------------------------------------
+
+    if img.ndim == 3:
+
+        img = img.permute(1, 2, 0)
+
+    img = img.numpy()
 
     plt.figure(figsize=(5, 5))
 
-    if img_padded.ndim == 2:  # Grayscale
-        plt.imshow(img_padded, cmap="gray")
-    else:  # RGB / multi-channel
-        plt.imshow(img_padded)
+    if img.ndim == 2:
+
+        plt.imshow(img, cmap="gray")
+
+    else:
+
+        plt.imshow(img)
 
     plt.title(title)
-    plt.axis("off")
-    plt.tight_layout()
-    plt.show()
 
-def preprocess_image_noresize(image_path, max_size,device="cuda:0"):
+    plt.axis("off")
+
+    plt.tight_layout()
+
+    plt.savefig("test.png")
+
+    plt.close()
+
+from PIL import Image
+import numpy as np
+
+
+def save_padded_image(
+    img_padded,
+    save_path="test.png"
+):
+    """
+    Saves a padded torch image tensor.
+
+    Supports:
+        (H,W)
+        (C,H,W)
+    """
+
+    img = img_padded.detach().cpu()
+
+    # --------------------------------------------------------
+    # CHW -> HWC
+    # --------------------------------------------------------
+
+    if img.ndim == 3:
+
+        img = img.permute(1, 2, 0)
+
+    img = img.numpy()
+
+    # --------------------------------------------------------
+    # FLOAT -> UINT8
+    # --------------------------------------------------------
+
+    img = (
+        np.clip(img, 0, 1) * 255
+    ).astype(np.uint8)
+
+    Image.fromarray(img).save(save_path)
+
+def preprocess_image_noresize(image_path, max_size,device="cuda:0",tag=''):
     """
     Loads a square image, pads it with zeros equally on all sides
     to reach (max_size, max_size), then flattens and returns it
@@ -65,6 +127,12 @@ def preprocess_image_noresize(image_path, max_size,device="cuda:0"):
     padding = (pad_before, pad_after, pad_before, pad_after)
 
     img_padded = F.pad(img, padding, mode="constant", value=0)
+
+    if tag != '':
+        save_padded_image(
+            img_padded,
+            f"original_images/original_{str(tag)}.png"
+        )
 
     img_flat = img_padded.flatten()
 
@@ -272,7 +340,79 @@ def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix=""):
     plt.tight_layout()
     plt.savefig(f"{title_suffix}.png")
     
-    return k_components, eigenvalues[:k_components], cumulative_variance[k_components-1]
+    return k_components, eigenvalues[:k_components], cumulative_variance[k_components-1], fro_norm_error
+
+def beta_vs_fro_norm(eigenvalues, beta_lst, title_suffix=""):
+    fro_norm_sq_list = []
+    k_lst = []
+    explained_variance_cutoff = []
+
+    for beta in beta_lst:
+        k, _, _, fro_norm_sq = analyze_precomputed_eigenvalues(
+            eigenvalues,
+            beta,
+            title_suffix + f"_beta_{beta}"
+        )
+
+        fro_norm_sq_list.append(fro_norm_sq)
+        k_lst.append(k)
+
+        # X-axis for first subplot
+        explained_variance_cutoff.append(1 - beta)
+
+    # Convert to numpy arrays for cleaner handling
+    fro_norm_sq_list = np.array(fro_norm_sq_list)
+    k_lst = np.array(k_lst)
+    explained_variance_cutoff = np.array(explained_variance_cutoff)
+
+    # ============================================================
+    # Plotting
+    # ============================================================
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # ------------------------------------------------------------
+    # Subplot 1:
+    # Frobenius norm squared vs explained variance cutoff
+    # ------------------------------------------------------------
+    axes[0].plot(
+        explained_variance_cutoff,
+        fro_norm_sq_list,
+        marker='o'
+    )
+
+    axes[0].set_xlabel("Explained Variance Cutoff (1 - beta)")
+    axes[0].set_ylabel("Frobenius Norm Squared")
+    axes[0].set_title("Fro Norm vs Explained Variance Cutoff")
+    axes[0].grid(True)
+
+    # ------------------------------------------------------------
+    # Subplot 2:
+    # Frobenius norm squared vs k
+    # ------------------------------------------------------------
+    axes[1].plot(
+        k_lst,
+        fro_norm_sq_list,
+        marker='o'
+    )
+
+    axes[1].set_xlabel("k")
+    axes[1].set_ylabel("Frobenius Norm Squared")
+    axes[1].set_title("Fro Norm vs k")
+    axes[1].grid(True)
+
+    # Overall title
+    if title_suffix != "":
+        fig.suptitle(title_suffix)
+
+    plt.tight_layout()
+    plt.savefig(f"FrobeniusNormSquared_{title_suffix}.png")
+
+    return {
+        "beta_lst": beta_lst,
+        "explained_variance_cutoff": explained_variance_cutoff,
+        "k_lst": k_lst,
+        "fro_norm_sq_list": fro_norm_sq_list,
+    }
 
 
 def compute_projection_Z(eigenvalues, eigenvectors, k):
