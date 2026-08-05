@@ -5,6 +5,7 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from torchvision.io import read_image
+import pandas as pd
 
 #check images size
 import os
@@ -137,6 +138,178 @@ def preprocess_image_noresize(image_path, max_size,device="cuda:0",tag=''):
     img_flat = img_padded.flatten()
 
     return img_flat
+
+def trim_black_borders(img, tol=1e-3):
+    """
+    Trims black borders from a torch image tensor.
+
+    Parameters:
+    - img: torch.Tensor of shape (C, H, W)
+    - tol: tolerance for considering a pixel as non-black
+
+    Returns:
+    - img_trimmed: torch.Tensor of shape (C, H_trimmed, W_trimmed)
+    """
+
+    if img.ndim != 3:
+        raise ValueError("Input image must be a 3D tensor (C, H, W)")
+
+    # Create a mask of non-black pixels
+    non_black_mask = torch.any(img > tol, dim=0)
+
+    if not non_black_mask.any():
+        # If the entire image is black, return the original image
+        return img
+
+    # Find the bounding box of non-black pixels
+    rows = torch.where(non_black_mask.any(dim=1))[0]
+    cols = torch.where(non_black_mask.any(dim=0))[0]
+
+    top = int(rows[0].item())
+    bottom = int(rows[-1].item())
+    left = int(cols[0].item())
+    right = int(cols[-1].item())
+
+    # Crop the image to the bounding box
+    img_trimmed = img[:, top:bottom + 1, left:right + 1]
+
+    return img_trimmed
+
+def preprocess_image_resize(image_path, resize_dim,device="cuda:0",tag=''):
+    """
+    Loads an image, crops out black borders as much as possible while keeping the
+    content centered, converts it to a square crop, resizes it to (resize_dim, resize_dim),
+    and returns it as a flattened torch tensor.
+    """
+
+    img = (read_image(image_path).float()/255.0).to(device)  # (C, H, W)
+
+    if img.ndim == 2:
+        img = img.unsqueeze(0)
+
+    C, H, W = img.shape
+
+    # Remove black borders by finding the tight bounding box around non-black pixels.
+    img_cropped = trim_black_borders(img)
+
+    img_resized = F.interpolate(
+        img_cropped.unsqueeze(0),
+        size=(resize_dim, resize_dim),
+        mode='bilinear',
+        align_corners=False
+    ).squeeze(0)
+
+    if tag != '':
+        save_padded_image(
+            img_resized,
+            f"original_images/original_{str(tag)}.png"
+        )
+
+    img_flat = img_resized.flatten()
+
+    return img_flat
+
+def preprocess_image_relevant_crops(image_path,crop_size,device="cuda:0",tag=''):
+    """
+    Loads an image, trims black borders first, finds three points on the horizontal midline
+    of the trimmed image at the center of the left, center, and right thirds of the image,
+    crops a square region of size (crop_size, crop_size) around each point, and returns a
+    dictionary of flattened torch tensors for each crop. If the image is a left eye image the left crop is assigned to the "OD" key, else the right crop is assigned to the "OD" key, the center crop is assigned to "macula", and the
+    remaining crop is assigned to "other".
+    """
+
+    img = (read_image(image_path).float()/255.0).to(device)  # (C, H, W)
+
+    if img.ndim == 2:
+        img = img.unsqueeze(0)
+
+    img_trimmed = trim_black_borders(img)
+
+    _, height, width = img_trimmed.shape
+    mid_y = height // 2
+
+    x_positions = [int(width / 6), width // 2, int(5 * width / 6)]
+
+    def extract_square_crop(image, center_y, center_x, size):
+        channels, img_h, img_w = image.shape
+
+        start_y = center_y - size // 2
+        end_y = start_y + size
+        start_x = center_x - size // 2
+        end_x = start_x + size
+
+        if start_y < 0:
+            overflow = -start_y
+            start_y = 0
+            end_y = min(img_h, end_y + overflow)
+        elif end_y > img_h:
+            overflow = end_y - img_h
+            end_y = img_h
+            start_y = max(0, start_y - overflow)
+
+        if start_x < 0:
+            overflow = -start_x
+            start_x = 0
+            end_x = min(img_w, end_x + overflow)
+        elif end_x > img_w:
+            overflow = end_x - img_w
+            end_x = img_w
+            start_x = max(0, start_x - overflow)
+
+        crop = torch.zeros((channels, size, size), dtype=image.dtype, device=image.device)
+
+        src_y0 = max(0, start_y)
+        src_y1 = min(img_h, end_y)
+        src_x0 = max(0, start_x)
+        src_x1 = min(img_w, end_x)
+
+        dst_y0 = max(0, -start_y)
+        dst_y1 = dst_y0 + (src_y1 - src_y0)
+        dst_x0 = max(0, -start_x)
+        dst_x1 = dst_x0 + (src_x1 - src_x0)
+
+        if src_y1 > src_y0 and src_x1 > src_x0:
+            crop[:, dst_y0:dst_y1, dst_x0:dst_x1] = image[:, src_y0:src_y1, src_x0:src_x1]
+        assert crop.shape == (channels, size, size), f"Crop shape mismatch: {crop.shape} != {(channels, size, size)}"
+        return crop
+
+    left_crop = extract_square_crop(img_trimmed, mid_y, x_positions[0], crop_size)
+    center_crop = extract_square_crop(img_trimmed, mid_y, x_positions[1], crop_size)
+    right_crop = extract_square_crop(img_trimmed, mid_y, x_positions[2], crop_size)
+
+    filename = image_path.split('/')[-1]
+    df = pd.read_csv("LvsR.csv")
+    row = df[df['FileName'] == filename]
+    label = row['Label'].values[0] if not row.empty else None
+
+    if label == 'L':
+        od_crop = left_crop
+        other_crop = right_crop
+    elif label == 'R':
+        od_crop = right_crop
+        other_crop = left_crop
+    else:
+        raise ValueError(f"Label for {filename} not found in LvsR.csv")
+
+    if tag != '':
+        save_padded_image(
+            od_crop,
+            f"original_images/{str(tag)}_od.png"
+        )
+        save_padded_image(
+            center_crop,
+            f"original_images/{str(tag)}_center.png"
+        )
+        save_padded_image(
+            other_crop,
+            f"original_images/{str(tag)}_other.png"
+        )
+
+    return {
+        "OD": od_crop.flatten(),
+        "macula": center_crop.flatten(),
+        "other": other_crop.flatten(),
+    }
 
 def center_matrix_batchwise_torch(X, num_batches=10):
     """
