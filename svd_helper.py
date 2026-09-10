@@ -311,6 +311,101 @@ def preprocess_image_relevant_crops(image_path,crop_size,device="cuda:0",tag='')
         "other": other_crop.flatten(),
     }
 
+def preprocess_image_coord_crop(image_path, crop_size, device="cuda:0", tag=''):
+    """
+    Loads an image and crops square regions of size (crop_size, crop_size) centered
+    at the (od_x, od_y) and (fovea_x, fovea_y) coordinates listed for that image in
+    messidor_od_fovea.csv. Returns a dictionary of flattened torch tensors in the
+    same format as preprocess_image_relevant_crops, with the OD crop assigned to the
+    "OD" key and the fovea crop assigned to the "FOVEA" key.
+    Returns None if the image has no entry or no coordinates in the CSV.
+    """
+
+    filename = image_path.split('/')[-1]
+    image_id = os.path.splitext(filename)[0]
+    df = pd.read_csv("messidor_od_fovea.csv")
+    row = df[df['image_id'] == image_id]
+
+    if row.empty:
+        return None
+
+    od_x = row['od_x'].values[0]
+    od_y = row['od_y'].values[0]
+    fovea_x = row['fovea_x'].values[0]
+    fovea_y = row['fovea_y'].values[0]
+
+    if pd.isna(od_x) or pd.isna(od_y) or pd.isna(fovea_x) or pd.isna(fovea_y):
+        return None
+
+    img = (read_image(image_path).float()/255.0).to(device)  # (C, H, W)
+
+    if img.ndim == 2:
+        img = img.unsqueeze(0)
+
+    channels, img_h, img_w = img.shape
+
+    def extract_square_crop(center_x, center_y):
+        center_y = int(round(center_y))
+        center_x = int(round(center_x))
+
+        start_y = center_y - crop_size // 2
+        end_y = start_y + crop_size
+        start_x = center_x - crop_size // 2
+        end_x = start_x + crop_size
+
+        if start_y < 0:
+            overflow = -start_y
+            start_y = 0
+            end_y = min(img_h, end_y + overflow)
+        elif end_y > img_h:
+            overflow = end_y - img_h
+            end_y = img_h
+            start_y = max(0, start_y - overflow)
+
+        if start_x < 0:
+            overflow = -start_x
+            start_x = 0
+            end_x = min(img_w, end_x + overflow)
+        elif end_x > img_w:
+            overflow = end_x - img_w
+            end_x = img_w
+            start_x = max(0, start_x - overflow)
+
+        crop = torch.zeros((channels, crop_size, crop_size), dtype=img.dtype, device=img.device)
+
+        src_y0 = max(0, start_y)
+        src_y1 = min(img_h, end_y)
+        src_x0 = max(0, start_x)
+        src_x1 = min(img_w, end_x)
+
+        dst_y0 = max(0, -start_y)
+        dst_y1 = dst_y0 + (src_y1 - src_y0)
+        dst_x0 = max(0, -start_x)
+        dst_x1 = dst_x0 + (src_x1 - src_x0)
+
+        if src_y1 > src_y0 and src_x1 > src_x0:
+            crop[:, dst_y0:dst_y1, dst_x0:dst_x1] = img[:, src_y0:src_y1, src_x0:src_x1]
+        assert crop.shape == (channels, crop_size, crop_size), f"Crop shape mismatch: {crop.shape} != {(channels, crop_size, crop_size)}"
+        return crop
+
+    od_crop = extract_square_crop(od_x, od_y)
+    fovea_crop = extract_square_crop(fovea_x, fovea_y)
+
+    if tag != '':
+        save_padded_image(
+            od_crop,
+            f"original_images/{str(tag)}_od.png"
+        )
+        save_padded_image(
+            fovea_crop,
+            f"original_images/{str(tag)}_fovea.png"
+        )
+
+    return {
+        "OD": od_crop.flatten(),
+        "FOVEA": fovea_crop.flatten(),
+    }
+
 def center_matrix_batchwise_torch(X, num_batches=10):
     """
     Row-centers a large matrix X (d x n) in batches using PyTorch.
@@ -435,7 +530,7 @@ def save_list_to_csv(data, filename):
             for item in data:
                 writer.writerow([item])
 
-def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix=""):
+def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix="", output_dir="."):
     """
     Performs scree analysis on precomputed eigenvalues.
 
@@ -444,14 +539,17 @@ def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix=""):
     - beta: acceptable variance loss (0 to 1).
             Keeps components capturing at least (1 - beta) variance.
     - title_suffix: optional string for plot titles
+    - output_dir: directory the CSV/plot are written to (created if missing)
     """
-    
+
     variance_cutoff = 1 - beta
-    
+
+    os.makedirs(output_dir, exist_ok=True)
+
     # 1. Sort eigenvalues (descending)
     eigenvalues = np.array(eigenvalues.cpu())
     eigenvalues = np.sort(eigenvalues)[::-1]
-    save_list_to_csv(eigenvalues,f"eigenvalues_{title_suffix}.csv")
+    save_list_to_csv(eigenvalues,os.path.join(output_dir, f"eigenvalues_{title_suffix}.csv"))
     
     # Remove tiny negative values due to numerical noise
     eigenvalues[eigenvalues < 0] = 0
@@ -511,20 +609,24 @@ def analyze_precomputed_eigenvalues(eigenvalues, beta=0.01, title_suffix=""):
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(f"{title_suffix}.png")
-    
+    plt.savefig(os.path.join(output_dir, f"{title_suffix}.png"))
+    plt.close()
+
     return k_components, eigenvalues[:k_components], cumulative_variance[k_components-1], fro_norm_error
 
-def beta_vs_fro_norm(eigenvalues, beta_lst, title_suffix=""):
+def beta_vs_fro_norm(eigenvalues, beta_lst, title_suffix="", output_dir="."):
     fro_norm_sq_list = []
     k_lst = []
     explained_variance_cutoff = []
+
+    os.makedirs(output_dir, exist_ok=True)
 
     for beta in beta_lst:
         k, _, _, fro_norm_sq = analyze_precomputed_eigenvalues(
             eigenvalues,
             beta,
-            title_suffix + f"_beta_{beta}"
+            title_suffix + f"_beta_{beta}",
+            output_dir=output_dir
         )
 
         fro_norm_sq_list.append(fro_norm_sq)
@@ -578,7 +680,7 @@ def beta_vs_fro_norm(eigenvalues, beta_lst, title_suffix=""):
         fig.suptitle(title_suffix)
 
     plt.tight_layout()
-    plt.savefig(f"FrobeniusNormSquared_{title_suffix}.png")
+    plt.savefig(os.path.join(output_dir, f"FrobeniusNormSquared_{title_suffix}.png"))
 
     return {
         "beta_lst": beta_lst,

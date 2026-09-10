@@ -2,6 +2,7 @@ import os
 import glob
 import cv2
 import numpy as np
+import pandas as pd
 import torch
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -17,9 +18,9 @@ DEVICE = "cuda:0"
 
 CALC_BATCH_SIZE = 100
 
-CROP_SIZE = 512
+CROP_SIZE = 256
 
-IMAGE_REGION = "OD"
+IMAGE_REGION = "FOVEA"
 
 size_counter, failed_images = count_image_sizes(IMAGE_DIR)
 print("Image size distribution:\n")
@@ -37,6 +38,14 @@ image_files = glob.glob(os.path.join(IMAGE_DIR, '*.png')) + \
               glob.glob(os.path.join(IMAGE_DIR, '*.JPG'))
 image_files.sort()
 
+coords_df = pd.read_csv("messidor_od_fovea.csv")
+valid_image_ids = set(coords_df.dropna(subset=["od_x", "od_y", "fovea_x", "fovea_y"])["image_id"])
+skipped = [f for f in image_files if os.path.splitext(os.path.basename(f))[0] not in valid_image_ids]
+image_files = [f for f in image_files if os.path.splitext(os.path.basename(f))[0] in valid_image_ids]
+
+if skipped:
+    print(f"\nSkipping {len(skipped)} images with no coordinates in messidor_od_fovea.csv")
+
 n = len(image_files)
 
 print(f"Found {n} images.")
@@ -45,7 +54,7 @@ HTH = torch.zeros((n,n),device=DEVICE)
 avg_img = torch.zeros((CROP_SIZE**2*3,),device=DEVICE)
 vec_i_batch = []
 for i, f_i in tqdm(enumerate(image_files)):
-    vec_i = preprocess_image_relevant_crops(f_i, CROP_SIZE, DEVICE,tag="region_test")[IMAGE_REGION]
+    vec_i = preprocess_image_coord_crop(f_i, CROP_SIZE, DEVICE,tag="region_test")[IMAGE_REGION]
     avg_img += vec_i
     vec_i_batch.append(vec_i)
     if len(vec_i_batch) == CALC_BATCH_SIZE:
@@ -54,7 +63,7 @@ for i, f_i in tqdm(enumerate(image_files)):
         if vec_i is not None:
             vec_j_batch = []
             for j, f_j in tqdm(enumerate(image_files[:i+1])):
-                vec_j = preprocess_image_relevant_crops(f_j, CROP_SIZE, DEVICE)[IMAGE_REGION]
+                vec_j = preprocess_image_coord_crop(f_j, CROP_SIZE, DEVICE)[IMAGE_REGION]
                 vec_j_batch.append(vec_j)
                 if len(vec_j_batch) == CALC_BATCH_SIZE:
                     vec_j_batch_torch = torch.stack(vec_j_batch)
@@ -80,7 +89,7 @@ else:
         # print(vec_i_batch_torch.shape,vec_i_batch_torch.device)
         vec_j_batch = []
         for j, f_j in tqdm(enumerate(image_files[:i+1])):
-            vec_j = preprocess_image_relevant_crops(f_j, CROP_SIZE, DEVICE)[IMAGE_REGION]
+            vec_j = preprocess_image_coord_crop(f_j, CROP_SIZE, DEVICE)[IMAGE_REGION]
             vec_j_batch.append(vec_j)
             if len(vec_j_batch) == CALC_BATCH_SIZE:
                 vec_j_batch_torch = torch.stack(vec_j_batch)
@@ -103,7 +112,7 @@ avg_img /= n
 sigma = torch.zeros((n))
 
 for i, f_i in tqdm(enumerate(image_files)):
-    vec_i = preprocess_image_relevant_crops(f_i, CROP_SIZE, DEVICE)[IMAGE_REGION]
+    vec_i = preprocess_image_coord_crop(f_i, CROP_SIZE, DEVICE)[IMAGE_REGION]
     sigma[i] = torch.sqrt(torch.sum((vec_i-avg_img)**2))
 
 

@@ -1,59 +1,59 @@
+import os
 import torch
 from svd_helper import *
 
-HTH = torch.load("saved_matrices/HTH.pt").to("cpu")
-
-mu = torch.load("saved_matrices/mu.pt").unsqueeze(1).to("cpu")
-
-sigma = torch.load("saved_matrices/sigma.pt").to("cpu")
-
-sigma_inv = 1/sigma
-
-DEVICE = mu.device
+MATRIX_DIR = "saved_matrices"
 
 BETA_LST = [0.01,0.05,0.1,0.15,0.2]
 
-print(HTH.shape,mu.shape)
-n = int(HTH.shape[0])
-d = int(mu.shape[0])
-print(n,d)
-one = torch.ones((n,1),device=DEVICE)
-HTH_cov = (HTH + (one @ mu.T @ mu @ one.T) - (one @ one.T @ HTH/n) - (HTH/n @ one @ one.T))/n
+def eigen_analysis(run_name, beta_lst=BETA_LST):
+    """
+    Runs eigen-decomposition (raw moments, covariance, correlation) on the
+    HTH/mu/sigma matrices saved for `run_name` by dim-red-crops.py, and stores
+    every resulting artifact (eigenvectors, projections Z, eigenvalue
+    CSVs/plots) under saved_matrices/<run_name>/ so results from different
+    runs (e.g. different IMAGE_REGION/CROP_SIZE combinations) never collide.
+    """
 
-HTH_cor = sigma_inv[:,None] * HTH_cov * sigma_inv[None,:] 
+    output_dir = os.path.join(MATRIX_DIR, run_name)
+    os.makedirs(output_dir, exist_ok=True)
 
-eigenvalues_raw, eigenvectors_raw = torch.linalg.eigh(HTH)
+    HTH = torch.load(os.path.join(MATRIX_DIR, f"HTH_{run_name}.pt")).to("cpu")
+    mu = torch.load(os.path.join(MATRIX_DIR, f"mu_{run_name}.pt")).unsqueeze(1).to("cpu")
+    sigma = torch.load(os.path.join(MATRIX_DIR, f"sigma_{run_name}.pt")).to("cpu")
 
-torch.save(eigenvectors_raw,"saved_matrices/eigenvectors_raw.pt")
+    sigma_inv = 1 / sigma
 
-k_raw, _, _, _ = analyze_precomputed_eigenvalues(eigenvalues_raw,title_suffix="RawMoments")
+    device = mu.device
 
-beta_vs_fro_norm(eigenvalues_raw,BETA_LST,title_suffix="RawMoments")
+    print(run_name, HTH.shape, mu.shape)
+    n = int(HTH.shape[0])
+    d = int(mu.shape[0])
+    print(n, d)
 
-Z_raw = compute_projection_Z(eigenvalues_raw,eigenvectors_raw,k_raw)
+    one = torch.ones((n, 1), device=device)
+    HTH_cov = (HTH + (one @ mu.T @ mu @ one.T) - (one @ one.T @ HTH / n) - (HTH / n @ one @ one.T)) / n
+    HTH_cor = sigma_inv[:, None] * HTH_cov * sigma_inv[None, :]
 
-torch.save(Z_raw,"saved_matrices/Z_raw.pt")
+    def run_variant(HTH_variant, variant_key, title_suffix):
+        eigenvalues, eigenvectors = torch.linalg.eigh(HTH_variant)
+        torch.save(eigenvectors, os.path.join(output_dir, f"eigenvectors_{variant_key}.pt"))
 
-eigenvalues_cov, eigenvectors_cov = torch.linalg.eigh(HTH_cov)
+        k, _, _, _ = analyze_precomputed_eigenvalues(
+            eigenvalues, title_suffix=title_suffix, output_dir=output_dir
+        )
+        beta_vs_fro_norm(eigenvalues, beta_lst, title_suffix=title_suffix, output_dir=output_dir)
 
-torch.save(eigenvectors_cov,"saved_matrices/eigenvectors_cov.pt")
+        Z = compute_projection_Z(eigenvalues, eigenvectors, k)
+        torch.save(Z, os.path.join(output_dir, f"Z_{variant_key}.pt"))
 
-k_cov, _, _,_ = analyze_precomputed_eigenvalues(eigenvalues_cov,title_suffix="Covariance")
+    run_variant(HTH, "raw", "RawMoments")
+    run_variant(HTH_cov, "cov", "Covariance")
+    run_variant(HTH_cor, "cor", "Correlation")
 
-beta_vs_fro_norm(eigenvalues_cov,BETA_LST,title_suffix="Covariance")
 
-Z_cov = compute_projection_Z(eigenvalues_cov,eigenvectors_cov,k_cov)
+if __name__ == "__main__":
+    IMAGE_REGION = "OD"
+    CROP_SIZE = 512
 
-torch.save(Z_cov,"saved_matrices/Z_cov.pt")
-
-eigenvalues_cor, eigenvectors_cor = torch.linalg.eigh(HTH_cor)
-
-torch.save(eigenvectors_cor,"saved_matrices/eigenvectors_cor.pt")
-
-k_cor,_,_,_ = analyze_precomputed_eigenvalues(eigenvalues_cor,title_suffix="Correlation")
-
-beta_vs_fro_norm(eigenvalues_cor,BETA_LST,title_suffix="Correlation")
-
-Z_cor = compute_projection_Z(eigenvalues_cor,eigenvectors_cor,k_cor)
-
-torch.save(Z_cor,"saved_matrices/Z_cor.pt")
+    eigen_analysis(f"{IMAGE_REGION}_{CROP_SIZE}")
