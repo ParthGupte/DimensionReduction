@@ -22,7 +22,7 @@ print("Image size distribution:\n")
 for (w, h), count in sorted(size_counter.items()):
     print(f"{w} x {h} : {count} images")
 
-MAX_SIZE = w
+MAX_SIZE = max(w,h)
 if failed_images:
     print("\nFailed to read the following files:")
     for f in failed_images:
