@@ -1,7 +1,8 @@
 import os
+import csv
 import glob
 import torch
-import numpy as np
+import pandas as pd
 from tqdm import tqdm
 from PIL import Image
 
@@ -12,406 +13,356 @@ from svd_helper import *
 # ============================================================
 
 IMAGE_DIR = "MESSIDOR/images"
+MATRIX_DIR = "saved_matrices"
+COORDS_CSV = "messidor_od_fovea.csv"
 
-SAVE_DIR_RAW = "reconstructed_raw"
-SAVE_DIR_COV = "reconstructed_cov"
-SAVE_DIR_COR = "reconstructed_cor"
+CROP_CONFIGS = [
+    ("OD", 256),
+    ("OD", 512),
+    ("FOVEA", 256),
+    ("FOVEA", 512),
+]
 
-os.makedirs(SAVE_DIR_RAW, exist_ok=True)
-os.makedirs(SAVE_DIR_COV, exist_ok=True)
-os.makedirs(SAVE_DIR_COR, exist_ok=True)
+VARIANTS = ["raw", "cov", "cor"]
 
-DEVICE = "cuda:1"
+BETA_LST = [0.01, 0.05, 0.10]
+
+BETA_SUFFIX = {
+    0.01: "",
+    0.05: "_95",
+    0.10: "_90",
+}
+
+N_SAMPLES = 5
+
+SAVE_IMAGES = True
+
+DEVICE = "cuda:0"
 
 CALC_BATCH_SIZE = 10
 
-BETA = 0.01
+METRICS_CSV = "crop_reconstruction_mse.csv"
+
 
 # ============================================================
-# LOAD SAVED MATRICES
+# HELPERS
 # ============================================================
 
-HTH = torch.load(
-    "saved_matrices/HTH.pt",
-    map_location=DEVICE
-)
+def load_image_files():
+    """
+    Same glob + sort + coordinate-filter as dim-red-crops.py, so index i
+    matches the row/col i used when the crop config's HTH/mu/sigma were built.
+    """
 
-mu = torch.load(
-    "saved_matrices/mu.pt",
-    map_location=DEVICE
-).unsqueeze(1)
+    image_files = (
+        glob.glob(os.path.join(IMAGE_DIR, '*.png'))
+        + glob.glob(os.path.join(IMAGE_DIR, '*.jpg'))
+        + glob.glob(os.path.join(IMAGE_DIR, '*.JPG'))
+    )
+    image_files.sort()
 
-sigma = torch.load(
-    "saved_matrices/sigma.pt",
-    map_location=DEVICE
-)
-
-sigma_inv = 1.0 / sigma
-
-sigma_inv[torch.isinf(sigma_inv)] = 0
-
-n = HTH.shape[0]
-d = mu.shape[0]
-
-print("n =", n)
-print("d =", d)
-
-# ============================================================
-# BUILD COVARIANCE / CORRELATION MATRICES
-# ============================================================
-
-one = torch.ones((n, 1), device=DEVICE)
-
-HTH_cov = (
-    HTH
-    + (one @ mu.T @ mu @ one.T)
-    - (one @ one.T @ HTH / n)
-    - (HTH / n @ one @ one.T)
-) / n
-
-HTH_cor = (
-    sigma_inv[:, None]
-    * HTH_cov
-    * sigma_inv[None, :]
-)
-
-# ============================================================
-# EIGENDECOMPOSITION
-# ============================================================
-
-print("Computing eigendecomposition...")
-
-eigenvalues_raw, eigenvectors_raw = torch.linalg.eigh(HTH)
-
-eigenvalues_cov, eigenvectors_cov = torch.linalg.eigh(HTH_cov)
-
-eigenvalues_cor, eigenvectors_cor = torch.linalg.eigh(HTH_cor)
-
-# ============================================================
-# SORT DESCENDING
-# ============================================================
-
-idx_raw = torch.argsort(
-    eigenvalues_raw,
-    descending=True
-)
-
-idx_cov = torch.argsort(
-    eigenvalues_cov,
-    descending=True
-)
-
-idx_cor = torch.argsort(
-    eigenvalues_cor,
-    descending=True
-)
-
-eigenvalues_raw = eigenvalues_raw[idx_raw]
-eigenvectors_raw = eigenvectors_raw[:, idx_raw]
-
-eigenvalues_cov = eigenvalues_cov[idx_cov]
-eigenvectors_cov = eigenvectors_cov[:, idx_cov]
-
-eigenvalues_cor = eigenvalues_cor[idx_cor]
-eigenvectors_cor = eigenvectors_cor[:, idx_cor]
-
-# ============================================================
-# PICK K
-# ============================================================
-
-k_raw, _, _, _ = analyze_precomputed_eigenvalues(
-    eigenvalues_raw,
-    title_suffix="RawMoments",
-    beta=BETA
-)
-
-k_cov, _, _, _ = analyze_precomputed_eigenvalues(
-    eigenvalues_cov,
-    title_suffix="Covariance",
-    beta=BETA
-)
-
-k_cor, _, _, _ = analyze_precomputed_eigenvalues(
-    eigenvalues_cor,
-    title_suffix="Correlation",
-    beta=BETA
-)
-
-print("k_raw =", k_raw)
-print("k_cov =", k_cov)
-print("k_cor =", k_cor)
-
-# ============================================================
-# TOP-K EIGENVECTORS
-# ============================================================
-
-V_raw = eigenvectors_raw[:, :k_raw]
-
-V_cov = eigenvectors_cov[:, :k_cov]
-
-V_cor = eigenvectors_cor[:, :k_cor]
-
-# ============================================================
-# IMAGE FILES
-# ============================================================
-
-image_files = glob.glob(
-    os.path.join(IMAGE_DIR, '*.png')
-) + glob.glob(
-    os.path.join(IMAGE_DIR, '*.jpg')
-) + glob.glob(
-    os.path.join(IMAGE_DIR, '*.JPG')
-)
-
-image_files.sort()
-
-print(f"Found {len(image_files)} images")
-
-# ============================================================
-# IMAGE SIZE
-# ============================================================
-
-size_counter, failed_images = count_image_sizes(IMAGE_DIR)
-
-print("Image size distribution:\n")
-
-for (w, h), count in sorted(size_counter.items()):
-    print(f"{w} x {h} : {count} images")
-
-MAX_SIZE = w
-
-# ============================================================
-# COMPUTE LATENT MATRICES
-# ============================================================
-
-print("Computing latent matrices...")
-
-Z_raw = torch.zeros(
-    (d, k_raw),
-    device=DEVICE
-)
-
-Z_cov = torch.zeros(
-    (d, k_cov),
-    device=DEVICE
-)
-
-Z_cor = torch.zeros(
-    (d, k_cor),
-    device=DEVICE
-)
-
-for start in tqdm(range(0, n, CALC_BATCH_SIZE)):
-
-    end = min(start + CALC_BATCH_SIZE, n)
-
-    # --------------------------------------------------------
-    # LOAD BATCH
-    # --------------------------------------------------------
-
-    batch_vecs = []
-
-    for i in range(start, end):
-
-        vec = preprocess_image_noresize(
-            image_files[i],
-            MAX_SIZE,
-            DEVICE,
-            i
-        )
-        # break
-
-        batch_vecs.append(vec)
-
-    H_batch = torch.stack(
-        batch_vecs,
-        dim=1
-    )  # (d, batch)
-
-    # --------------------------------------------------------
-    # RAW
-    # --------------------------------------------------------
-
-    Z_raw += (
-        H_batch
-        @ V_raw[start:end]
+    coords_df = pd.read_csv(COORDS_CSV)
+    valid_image_ids = set(
+        coords_df.dropna(subset=["od_x", "od_y", "fovea_x", "fovea_y"])["image_id"]
     )
 
-    # --------------------------------------------------------
-    # COVARIANCE
-    # --------------------------------------------------------
+    return [
+        f for f in image_files
+        if os.path.splitext(os.path.basename(f))[0] in valid_image_ids
+    ]
 
-    H_centered = H_batch - mu
 
-    Z_cov += (
-        H_centered
-        @ V_cov[start:end]
-    )
+def eigenvalues_from_eigenvectors(HTH_variant, eigenvectors):
+    """
+    Recovers eigenvalues in `eigenvectors`' column order via the Rayleigh
+    quotient (v_i^T HTH_variant v_i = lambda_i for an orthonormal eigenvector
+    v_i), instead of re-running torch.linalg.eigh.
+    """
 
-    # --------------------------------------------------------
-    # CORRELATION
-    # --------------------------------------------------------
+    HTH_v_V = HTH_variant @ eigenvectors
+    return (eigenvectors * HTH_v_V).sum(dim=0)
 
-    sigma_batch_inv = sigma_inv[start:end]
 
-    H_standardized = (
-        H_centered
-        * sigma_batch_inv.unsqueeze(0)
-    )
+def k_for_betas(eigenvalues_sorted, beta_lst):
+    """
+    Same k-selection arithmetic as analyze_precomputed_eigenvalues
+    (svd_helper.py), inlined so it doesn't rewrite the existing CSVs/plots.
+    """
 
-    Z_cor += (
-        H_standardized
-        @ V_cor[start:end]
-    )
+    variance = eigenvalues_sorted.clamp(min=0)
+    total_variance = variance.sum()
+    cumulative = torch.cumsum(variance / total_variance, dim=0)
 
-# ============================================================
-# RECONSTRUCT IMAGES (BATCHED)
-# ============================================================
+    k_by_beta = {}
 
-print("Reconstructing images...")
+    for beta in beta_lst:
+        target = torch.tensor(1 - beta, device=cumulative.device, dtype=cumulative.dtype)
+        k = int(torch.searchsorted(cumulative, target).item()) + 1
+        k_by_beta[beta] = min(k, eigenvalues_sorted.shape[0])
 
-mu_vec = mu.squeeze(1)
+    return k_by_beta
 
-for start in tqdm(range(0, n, CALC_BATCH_SIZE)):
 
-    end = min(start + CALC_BATCH_SIZE, n)
-
-    batch_size = end - start
-
-    # ========================================================
-    # GET BATCH EIGENVECTORS
-    # ========================================================
-
-    V_raw_batch = V_raw[start:end].T      # (k_raw, batch)
-
-    V_cov_batch = V_cov[start:end].T      # (k_cov, batch)
-
-    V_cor_batch = V_cor[start:end].T      # (k_cor, batch)
-
-    # ========================================================
-    # RAW RECONSTRUCTION
-    # ========================================================
-
-    H_recon_raw = (
-        Z_raw @ V_raw_batch
-    )                                       # (d, batch)
-
-    # ========================================================
-    # COVARIANCE RECONSTRUCTION
-    # ========================================================
-
-    H_recon_cov = (
-        Z_cov @ V_cov_batch
-    ) + mu                                  # (d, batch)
-
-    # ========================================================
-    # CORRELATION RECONSTRUCTION
-    # ========================================================
-
-    H_recon_cor = (
-        Z_cor @ V_cor_batch
-    )                                       # (d, batch)
-
-    sigma_batch = sigma[start:end]          # (batch,)
-
-    H_recon_cor = (
-        H_recon_cor
-        * sigma_batch.unsqueeze(0)
-        + mu
-    )
-
-    # ========================================================
-    # CLAMP
-    # ========================================================
-
-    # ========================================================
-    # MOVE TO CPU ONCE
-    # ========================================================
-
-    H_recon_raw = (
-        H_recon_raw
+def save_crop_png(vec, size, path):
+    img = (
+        vec.reshape(3, size, size)
+        .permute(1, 2, 0)
         .mul(255)
-        .clamp(0,255)
+        .clamp(0, 255)
         .byte()
         .cpu()
+        .numpy()
+    )
+    Image.fromarray(img).save(path)
+
+
+# ============================================================
+# PER-CROP-CONFIG PROCESSING
+# ============================================================
+
+def process_crop_config(region, size):
+
+    run_name = f"{region}_{size}"
+    eigen_dir = os.path.join(MATRIX_DIR, run_name)
+
+    print(f"\n==================== {run_name} ====================")
+
+    # --------------------------------------------------------
+    # LOAD ALREADY-SAVED MATRICES / EIGENVECTORS
+    # (no torch.linalg.eigh, no analyze_precomputed_eigenvalues here --
+    # that analysis already ran in eigen_analysis.py for this run_name)
+    # --------------------------------------------------------
+
+    HTH = torch.load(
+        os.path.join(MATRIX_DIR, f"HTH_{run_name}.pt"),
+        map_location=DEVICE,
+    )
+
+    mu = torch.load(
+        os.path.join(MATRIX_DIR, f"mu_{run_name}.pt"),
+        map_location=DEVICE,
+    ).unsqueeze(1)
+
+    sigma = torch.load(
+        os.path.join(MATRIX_DIR, f"sigma_{run_name}.pt"),
+        map_location=DEVICE,
+    )
+
+    sigma_inv = 1.0 / sigma
+    sigma_inv[torch.isinf(sigma_inv)] = 0
+
+    n = HTH.shape[0]
+    d = mu.shape[0]
+
+    print("n =", n)
+    print("d =", d)
+
+    one = torch.ones((n, 1), device=DEVICE)
+
+    HTH_cov = (
+        HTH
+        + (one @ mu.T @ mu @ one.T)
+        - (one @ one.T @ HTH / n)
+        - (HTH / n @ one @ one.T)
+    ) / n
+
+    HTH_cor = (
+        sigma_inv[:, None]
+        * HTH_cov
+        * sigma_inv[None, :]
+    )
+
+    HTH_variants = {"raw": HTH, "cov": HTH_cov, "cor": HTH_cor}
+
+    V_sorted = {}
+    k_by_beta = {}
+
+    for variant in VARIANTS:
+
+        eigenvectors = torch.load(
+            os.path.join(eigen_dir, f"eigenvectors_{variant}.pt"),
+            map_location=DEVICE,
         )
 
-    H_recon_cov = (
-        H_recon_cov
-        .mul(255)
-        .clamp(0,255)
-        .byte()
-        .cpu()
-        )
+        eigenvalues = eigenvalues_from_eigenvectors(HTH_variants[variant], eigenvectors)
 
-    H_recon_cor = (
-        H_recon_cor
-        .mul(255)
-        .clamp(0,255)
-        .byte()
-        .cpu()
-        )
+        idx = torch.argsort(eigenvalues, descending=True)
 
-    # ========================================================
-    # SAVE EACH IMAGE
-    # ========================================================
+        V_sorted[variant] = eigenvectors[:, idx]
+        k_by_beta[variant] = k_for_betas(eigenvalues[idx], BETA_LST)
 
-    for b in range(batch_size):
+        print(f"{variant}: k(beta) = {k_by_beta[variant]}")
 
-        idx = start + b
+    # --------------------------------------------------------
+    # IMAGE FILES
+    # --------------------------------------------------------
 
-        # ----------------------------------------------------
-        # RAW
-        # ----------------------------------------------------
+    image_files = load_image_files()
 
-        img_raw = (
-            H_recon_raw[:, b]
-            .reshape(3, MAX_SIZE, MAX_SIZE)
-            .permute(1,2,0)
-            .numpy()
-        )
+    assert len(image_files) == n, (
+        f"{run_name}: found {len(image_files)} images with coordinates, "
+        f"expected {n} to match the saved matrices"
+    )
 
-        Image.fromarray(img_raw).save(
-            os.path.join(
-                SAVE_DIR_RAW,
-                f"recon_raw_{idx:05d}.png"
+    sample_indices = set(range(min(N_SAMPLES, n)))
+
+    original_dir = f"original_{run_name}"
+
+    if SAVE_IMAGES:
+        os.makedirs(original_dir, exist_ok=True)
+
+        for variant in VARIANTS:
+            for beta in BETA_LST:
+                out_dir = f"reconstructed_{run_name}_{variant}{BETA_SUFFIX[beta]}"
+                os.makedirs(out_dir, exist_ok=True)
+
+    # --------------------------------------------------------
+    # COMPUTE LATENT MATRICES (single pass, k_max components per variant)
+    # --------------------------------------------------------
+
+    k_max = {variant: max(k_by_beta[variant].values()) for variant in VARIANTS}
+
+    Z = {
+        variant: torch.zeros((d, k_max[variant]), device=DEVICE)
+        for variant in VARIANTS
+    }
+
+    print("Computing latent matrices...")
+
+    for start in tqdm(range(0, n, CALC_BATCH_SIZE)):
+
+        end = min(start + CALC_BATCH_SIZE, n)
+
+        batch_vecs = [
+            preprocess_image_coord_crop(image_files[i], size, DEVICE)[region]
+            for i in range(start, end)
+        ]
+
+        H_batch = torch.stack(batch_vecs, dim=1)  # (d, batch)
+
+        Z["raw"] += H_batch @ V_sorted["raw"][start:end, :k_max["raw"]]
+
+        H_centered = H_batch - mu
+
+        Z["cov"] += H_centered @ V_sorted["cov"][start:end, :k_max["cov"]]
+
+        sigma_batch_inv = sigma_inv[start:end]
+        H_standardized = H_centered * sigma_batch_inv.unsqueeze(0)
+
+        Z["cor"] += H_standardized @ V_sorted["cor"][start:end, :k_max["cor"]]
+
+        if SAVE_IMAGES:
+            for b in range(end - start):
+                idx = start + b
+                if idx in sample_indices:
+                    save_crop_png(
+                        H_batch[:, b],
+                        size,
+                        os.path.join(original_dir, f"orig_{idx:05d}.png"),
+                    )
+
+    # --------------------------------------------------------
+    # RECONSTRUCT + MSE (per variant, per beta)
+    # --------------------------------------------------------
+
+    print("Reconstructing & computing MSE...")
+
+    sq_err_sum = {variant: {beta: 0.0 for beta in BETA_LST} for variant in VARIANTS}
+
+    for start in tqdm(range(0, n, CALC_BATCH_SIZE)):
+
+        end = min(start + CALC_BATCH_SIZE, n)
+        batch_size = end - start
+
+        # ground-truth crop batch, in [0, 1] -- reloaded here (rather than
+        # kept from the pass above) to avoid holding all n crops in memory
+        batch_vecs = [
+            preprocess_image_coord_crop(image_files[i], size, DEVICE)[region]
+            for i in range(start, end)
+        ]
+
+        H_batch = torch.stack(batch_vecs, dim=1)  # (d, batch)
+
+        for variant in VARIANTS:
+
+            V_batch_full = V_sorted[variant][start:end]  # (batch, k_max)
+
+            for beta in BETA_LST:
+
+                k = k_by_beta[variant][beta]
+
+                H_recon = (
+                    Z[variant][:, :k]
+                    @ V_batch_full[:, :k].T
+                )  # (d, batch)
+
+                if variant == "cov":
+                    H_recon = H_recon + mu
+                elif variant == "cor":
+                    sigma_batch = sigma[start:end]
+                    H_recon = H_recon * sigma_batch.unsqueeze(0) + mu
+
+                sq_err_sum[variant][beta] += (
+                    (H_recon - H_batch).pow(2).sum().item()
+                )
+
+                if SAVE_IMAGES:
+                    for b in range(batch_size):
+                        idx = start + b
+                        if idx in sample_indices:
+                            out_dir = f"reconstructed_{run_name}_{variant}{BETA_SUFFIX[beta]}"
+                            save_crop_png(
+                                H_recon[:, b],
+                                size,
+                                os.path.join(out_dir, f"recon_{variant}_{idx:05d}.png"),
+                            )
+
+    # --------------------------------------------------------
+    # COLLECT RESULTS
+    # --------------------------------------------------------
+
+    rows = []
+
+    for variant in VARIANTS:
+        for beta in BETA_LST:
+
+            avg_mse = sq_err_sum[variant][beta] / (n * d)
+
+            rows.append({
+                "region": region,
+                "size": size,
+                "variant": variant,
+                "beta": beta,
+                "k": k_by_beta[variant][beta],
+                "avg_mse": avg_mse,
+                "n": n,
+                "d": d,
+            })
+
+            print(
+                f"{run_name} | {variant} | beta={beta} | "
+                f"k={k_by_beta[variant][beta]} | avg_mse={avg_mse:.8f}"
             )
-        )
 
-        # ----------------------------------------------------
-        # COV
-        # ----------------------------------------------------
+    return rows
 
-        img_cov = (
-            H_recon_cov[:, b]
-            .reshape(3, MAX_SIZE, MAX_SIZE)
-            .permute(1,2,0)
-            .numpy()
-        )
 
-        Image.fromarray(img_cov).save(
-            os.path.join(
-                SAVE_DIR_COV,
-                f"recon_cov_{idx:05d}.png"
-            )
-        )
+# ============================================================
+# MAIN
+# ============================================================
 
-        # ----------------------------------------------------
-        # COR
-        # ----------------------------------------------------
+all_results = []
 
-        img_cor = (
-            H_recon_cor[:, b]
-            .reshape(3, MAX_SIZE, MAX_SIZE)
-            .permute(1,2,0)
-            .numpy()
-        )
+for region, size in CROP_CONFIGS:
+    all_results.extend(process_crop_config(region, size))
 
-        Image.fromarray(img_cor).save(
-            os.path.join(
-                SAVE_DIR_COR,
-                f"recon_cor_{idx:05d}.png"
-            )
-        )
+with open(METRICS_CSV, "w", newline="") as f:
+    writer = csv.DictWriter(
+        f,
+        fieldnames=["region", "size", "variant", "beta", "k", "avg_mse", "n", "d"],
+    )
+    writer.writeheader()
+    writer.writerows(all_results)
 
+print(f"\nSaved metrics to {METRICS_CSV}")
 print("Done.")

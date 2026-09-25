@@ -1,0 +1,550 @@
+\documentclass[a4paper,11pt]{article}
+
+% Essential Packages
+\usepackage{graphicx}       % For importing images
+\usepackage{geometry}       % For page margins
+\usepackage{booktabs}       % For professional looking tables
+\usepackage{amsmath}        % For math formatting
+\usepackage{float}          % To control figure placement
+\usepackage[utf8]{inputenc}
+\usepackage{caption}        % For better caption control
+\usepackage{hyperref}       % For clickable links (optional)
+\usepackage{subcaption}
+
+
+% Page Layout Setup
+\geometry{margin=1in}
+
+% Title Information
+\title{\textbf{Dimension Reduction Analysis Report}}
+\date{January 29, 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Objective}
+The objective of this analysis is to perform dimension reduction on the MESSIDOR fundus image dataset to identify the optimal number of components required to retain significant information. Specifically, we use a small $\beta =0.01$ 
+
+\section{Methodology}
+
+\subsection{Data Preprocessing}
+The data was processed using the following pipeline:
+\begin{itemize}
+    \item \textbf{Resizing:} Images were resized to $128 \times 128$ pixels.
+    \item \textbf{Vectorization:} Images were flattened into vectors of size $49152$ ($128 \times 128 \times 3$).
+    \item \textbf{Matrix Construction:} A Data Matrix $\mathbf{H}$ was constructed with shape $(49152, 1745)$. There are 1745 images, and each image has 49152 features.
+\end{itemize}
+
+\subsection{Analysis Approach}
+We performed Eigenvalue analysis using Singular Value Decomposition (SVD) to evaluate three specific statistical moments:
+\begin{enumerate}
+    \item \textbf{Covariance:} Row-centered data.
+    \item \textbf{Correlation:} Row-centered and Normalised data.
+\end{enumerate}
+
+A cutoff threshold of $\beta = 0.01$ was established, accepting a maximum of 1\% information loss (i.e., retaining 99\% of the variance).
+
+\section{Results}
+The quantitative results of the dimension reduction are summarized in Table \ref{tab:results}.
+\begin{table}[h]
+    \centering
+    \caption{Summary of Variance Retention and Component Selection}
+    \label{tab:results}
+    \vspace{0.2cm}
+    \begin{tabular}{lcccc}
+        \toprule
+        \textbf{Analysis Type} & \textbf{$\beta$} & \textbf{Cutoff} & \textbf{Components Kept ($k$)} & \textbf{Actual Var. Expl.} \\
+        \midrule
+        Covariance  & 0.01 & 99.00\% & \textbf{781} & 99.00\% \\
+        Correlation  & 0.01 & 99.00\% & \textbf{1458} & 99.00\% \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Visualizations}
+The Scree plots and Cumulative Variance plots for each method are presented below.
+
+% Figure 1: Raw
+
+
+% Figure 2: Covariance
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{plots/resized_covariance.png}
+    \caption{\textbf{Covariance Analysis (PCA).} Centering the data reveals more variation, requiring $k=781$ components to meet the threshold.}
+    \label{fig:covariance}
+\end{figure}
+
+% Figure 3: Covariance + with 1/(m)^1/2
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{plots/resized_correlation.png}
+    \caption{\textbf{Covariance Analysis (PCA)} The magnitude of the highest eigenvalue comes down, requiring $k=1458$ components.}
+    \label{fig:correlation}
+\end{figure}
+
+\section{Conclusion}
+The analysis demonstrates that the high-dimensional fundus image data possesses significant redundancy which can be compressed effectively. 
+
+\begin{itemize}
+    \item \textbf{Covariance Analysis:} Centering the data increases the required components to \textbf{781}.
+    \item \textbf{Correlation Analysis:} Standardizing the data further increases the requirement to \textbf{1458 components}.
+\end{itemize}
+\clearpage
+\title{\textbf{Dimension Reduction Analysis Report}}
+\date{March 24, 2026}
+\section{Objective}
+The objective is to perform dimension reduction on the MESSIDOR fundus image dataset to identify the optimal number of components required to retain significant information, without resizing the images. Specifically we use $\beta = 0.01$.
+\section{Methodology}
+To complete this analysis without resizing the images, we needed a space-efficient way of computing the eigenvalues of $H^TH$. Due to the massive size of each image (6324912 pixels), constructing the data matrix H ($ 6324912 \times 1745$) in memory proved impossible.
+\subsection{Data Preprocessing}
+The data was processed using the following pipeline:
+\begin{itemize}
+    \item \textbf{Padding:} All images were made into squares of the same shape by padding them with black pixels to match the shape of the largest image (3,1452,1452). 
+    \item \textbf{Flatten:} All images are then flattened into 1D tensors of shape (6324912,).
+\end{itemize}
+\subsection{Space efficient algorithm:}
+We know that $(H^TH)_{ij} = (H^TH)_{ji} = h_i \cdot h_j$  where $h_k$ is the kth image vector. Assume we can load a maximum of $2l$ vectors into memory at a time. Thus we can divide the computation as such:\\
+\begin{align*}
+    (H^TH)_{i:i+l,j:j+l} =  (H_{i:i+l})^TH_{j:j+l}\\
+    (H^TH)_{j:j+l,i:i+l} = ((H_{i:i+l})^TH_{j:j+l})^T
+\end{align*}
+Where $H_{i:i+l}$ represents the matrix of columns $i$ to $i+l$. Using this we loop over the images in a nested loop, loading batches of $l$ images at a time to compute $H^TH$ (shape: $1745\times1745$). During this process we also calculate the mean image vector ($\mu$) and the standard deviation vector ($\sigma$) and save these tensors.
+\subsubsection{Covariance Matrix Calculation:}
+We can compute the covariance matrix using linear algebra without further looping over the images. Here is how:
+Let $\textbf{1}$ be a column matrix of size n (n = number of images).\\
+Thus:\\
+\begin{align*}
+    H^TH_{Covariance} &= \frac{1}{n}(H-\mu\textbf{1}^T)^T(H-\mu\textbf{1}^T)\\
+    &= \frac{1}{n}(H^T-\textbf{1}\mu^T)(H-\mu\textbf{1}^T)\\
+    &= \frac{1}{n}(H^TH+\textbf{1}\mu^T\mu\textbf{1}^T-\textbf{1}\mu^TH-H^T\mu\textbf{1}^T)\\
+\end{align*}
+Since $\mu = \frac{1}{n}H\textbf{1}$,
+\begin{align*}
+    H^TH_{Covariance} &= \frac{1}{n}(H^TH+\textbf{1}\mu^T\mu\textbf{1}^T-\textbf{1}\left(\frac{1}{n}H\textbf{1}\right)^TH-H^T\left(\frac{1}{n}H\textbf{1}\right)\textbf{1}^T)\\
+    &= \frac{1}{n}(H^TH + \textbf{1}\mu^T\mu\textbf{1}^T - \frac{1}{n}\textbf{1}\textbf{1}^T(H^TH) - \frac{1}{n}(H^TH)\textbf{1}\textbf{1}^T)
+\end{align*}
+Using this formula, we can compute the covariance matrix using only $H^TH$ and $\mu$.
+\subsubsection{Correlation Matrix Calculation:}
+Let $\Sigma_{-} = diag(1/\sigma_i)$\\
+\begin{align*}
+    H^TH_{Correlation} &= \frac{1}{n}((H-\mu\textbf{1}^T)\Sigma_-)^T((H-\mu\textbf{1}^T)\Sigma_-)\\
+    &= \frac{1}{n}\Sigma_-^T(H-\mu\textbf{1}^T)^T(H-\mu\textbf{1}^T)\Sigma_-\\
+    &= \Sigma_-^TH^TH_{Cov}\Sigma_-
+\end{align*}
+\subsubsection{Data Projection}\label{sec:6.2.3}
+As derived in the notes, we know that the reduced data matrix can be calculated as follows:\\
+\begin{displaymath}
+    (U_1^TH)_{k\times n} = \Sigma_1^{\frac{1}{2}}V_1^T
+\end{displaymath}
+Using this formula we calculated the reduced Data Matrix.\\
+To compute the quality of projected data, we use Frobenius norm error. This is simply computed as:
+\begin{displaymath}
+    F_{err} = Tr(\Sigma_2)
+\end{displaymath}
+\\
+\\
+Now we perform the eigenvalue analysis using standard packages.
+\section{Results}
+The quantitative results of the dimension reduction are summarized in Table \ref{tab:results_noresize}.
+\begin{table}[h]
+    \centering
+    \caption{Summary of Variance Retention and Component Selection}
+    \label{tab:results_noresize}
+    \vspace{0.2cm}
+    \begin{tabular}{lrrrrr}
+        \toprule
+        \textbf{Analysis Type} & \textbf{$\beta$} & \textbf{Cutoff} & \textbf{Components Kept ($k$)} & \textbf{Actual Var. Expl.} & \textbf{Frobenius Norm} \\
+        \midrule
+        Raw Moments & 0.01 & 99.00\% & \textbf{9} & 99.03\% & 10324077.0\\
+        Covariance  & 0.01 & 99.00\% & \textbf{336} & 99.00\% & 1185.29 \\
+        Correlation  & 0.01 & 99.00\% & \textbf{493} & 99.00\% & 0.01\\
+        \bottomrule
+    \end{tabular}
+\end{table}
+\subsection{Visualizations}
+The Scree plots and Cumulative Variance plots for each method are presented below.
+
+% Figure 1: Raw
+
+
+% Figure 2: Covariance
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{plots/Covariance.png}
+    \caption{\textbf{Covariance Analysis (PCA).} Centering the data reveals more variation, requiring $k=336$ components to meet the threshold.}
+    \label{fig:covariance_noresize}
+\end{figure}
+
+% Figure 3: Covariance + with 1/(m)^1/2
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{plots/Correlation.png}
+    \caption{\textbf{Correlation Analysis (PCA)} The magnitude of the highest eigenvalue comes down, requiring $k=493$ components.}
+    \label{fig:correlation_noresize}
+\end{figure}
+
+\section{Conclusion}
+The analysis demonstrates that the high-dimensional fundus image data possesses significant redundancy which can be compressed effectively. 
+
+\begin{itemize}
+    \item \textbf{Covariance Analysis:} Centering the data increases the required components to \textbf{336}.
+    \item \textbf{Correlation Analysis:} Standardizing the data further increases the requirement to \textbf{493 components}.
+\end{itemize}
+\clearpage
+\title{\textbf{Dimension Reduction Analysis Report}}
+\date{May 21, 2026}
+\section{Objective}
+To find the variation of the Frobinus Norm Squared Error in relation to different values of $\beta$.
+\section{Results}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{plots/FrobeniusNormSquared_RawMoments.png}
+    \caption{\textbf{Frobenius Norm Squared vs $\beta$ for Raw Data Matix}}
+    \label{fig:fronorm_raw}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{plots/FrobeniusNormSquared_Covariance.png}
+    \caption{\textbf{Frobenius Norm Squared vs $\beta$ for Covariance Data Matix}}
+    \label{fig:fronorm_cov}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{plots/FrobeniusNormSquared_Correlation.png}
+    \caption{\textbf{Frobenius Norm Squared vs $\beta$ for Correlation Data Matix}}
+    \label{fig:fronorm_cor}
+\end{figure}
+
+\clearpage
+\title{\textbf{Dimension Reduction Analysis Report}}
+\date{May 22, 2026}
+\section{Objective}
+Reconstruct images that were encoded using SVD.
+\section{Methodology}
+The data projection was performed using (as explained in Sec~\ref{sec:6.2.3}):\\
+\begin{displaymath}
+    (U_1^TH)_{k\times n} = \Sigma_1^{\frac{1}{2}}V_1^T
+\end{displaymath}
+Thus, to reconstruct, we need to calculate:
+\begin{displaymath}
+    \hat{H} = U_1\Sigma_1^{\frac{1}{2}}V_1^T = U_1U_1^TH
+\end{displaymath}
+However, due to memory constraints, it is impossible for us to compute $U$ as that requires the eigenvalues of $(HH^T)_{k \times k}$ where $k = 63,24,912$.\\
+To overcome this constraint we express:
+\begin{align*}
+    \hat{H} &= U_1\Sigma_1^{\frac{1}{2}}V_1^T\\
+    &= (HV_1\Sigma_1^{-\frac{1}{2}})\Sigma_1^{\frac{1}{2}}V_1^T\\
+    &= HV_1V_1^T
+\end{align*}
+\section{Results}
+\begin{figure*}[t]
+\centering
+
+% =========================================================
+% ROW 1
+% =========================================================
+
+\begin{tabular}{cccc}
+
+\textbf{Original} &
+\textbf{$1-\beta = 0.99$} &
+\textbf{$1-\beta = 0.95$} &
+\textbf{$1-\beta = 0.90$} \\
+
+\includegraphics[width=0.22\linewidth]{images/original_0.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00000_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00000_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00000_beta_90.png} \\
+
+% =========================================================
+% ROW 2
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_1.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00001_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00001_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00001_beta_90.png} \\
+
+% =========================================================
+% ROW 3
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_2.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00002_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00002_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00002_beta_90.png} \\
+
+% =========================================================
+% ROW 4
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_3.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00003_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00003_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00003_beta_90.png} \\
+
+% =========================================================
+% ROW 5
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_4.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00004_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00004_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cor_00004_beta_90.png} \\
+
+\end{tabular}
+
+\caption{
+Comparison of reconstructed images for different values of $\beta$.
+The leftmost column shows the original images, while the remaining
+columns show reconstructions obtained using different reconstruction
+thresholds for \textbf{Correlation Analysis}.
+}
+
+\label{fig:reconstruction_grid_cor}
+
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+
+% =========================================================
+% ROW 1
+% =========================================================
+
+\begin{tabular}{cccc}
+
+\textbf{Original} &
+\textbf{$1-\beta = 0.99$} &
+\textbf{$1-\beta = 0.95$} &
+\textbf{$1-\beta = 0.90$} \\
+
+\includegraphics[width=0.22\linewidth]{images/original_0.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00000_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00000_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00000_beta_90.png} \\
+
+% =========================================================
+% ROW 2
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_1.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00001_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00001_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00001_beta_90.png} \\
+
+% =========================================================
+% ROW 3
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_2.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00002_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00002_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00002_beta_90.png} \\
+
+% =========================================================
+% ROW 4
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_3.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00003_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00003_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00003_beta_90.png} \\
+
+% =========================================================
+% ROW 5
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_4.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00004_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00004_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_cov_00004_beta_90.png} \\
+
+\end{tabular}
+
+\caption{
+Comparison of reconstructed images for different values of $\beta$.
+The leftmost column shows the original images, while the remaining
+columns show reconstructions obtained using different reconstruction
+thresholds for \textbf{Covariance Analysis}.
+}
+
+\label{fig:reconstruction_grid_cov}
+
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+
+% =========================================================
+% ROW 1
+% =========================================================
+
+\begin{tabular}{cccc}
+
+\textbf{Original} &
+\textbf{$1-\beta = 0.99$} &
+\textbf{$1-\beta = 0.95$} &
+\textbf{$1-\beta = 0.90$} \\
+
+\includegraphics[width=0.22\linewidth]{images/original_0.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00000_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00000_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00000_beta_90.png} \\
+
+% =========================================================
+% ROW 2
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_1.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00001_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00001_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00001_beta_90.png} \\
+
+% =========================================================
+% ROW 3
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_2.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00002_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00002_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00002_beta_90.png} \\
+
+% =========================================================
+% ROW 4
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_3.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00003_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00003_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00003_beta_90.png} \\
+
+% =========================================================
+% ROW 5
+% =========================================================
+
+\includegraphics[width=0.22\linewidth]{images/original_4.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00004_beta_99.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00004_beta_95.png} &
+\includegraphics[width=0.22\linewidth]{images/recon_raw_00004_beta_90.png} \\
+
+\end{tabular}
+
+\caption{
+Comparison of reconstructed images for different values of $\beta$.
+The leftmost column shows the original images, while the remaining
+columns show reconstructions obtained using different reconstruction
+thresholds for \textbf{Raw Data Analysis}.
+}
+
+\label{fig:reconstruction_grid_raw}
+
+\begin{table*}[t]
+\centering
+\small
+\begin{subtable}{0.32\linewidth}
+\centering
+\caption{RAW Reconstruction}
+\begin{tabular}{cccc}
+\hline
+Metric & $\beta=0.01$ & $\beta=0.05$ & $\beta=0.1$ \\
+\hline
+MSE & 0.000915 & 0.003942 & 0.003942 \\
+\hline
+\end{tabular}
+\end{subtable}
+\hfill
+\begin{subtable}{0.32\linewidth}
+\centering
+\caption{COV Reconstruction}
+\begin{tabular}{cccc}
+\hline
+Metric & $\beta=0.01$ & $\beta=0.05$ & $\beta=0.1$ \\
+\hline
+MSE & 0.000189 & 0.000905 & 0.001805 \\
+\hline
+\end{tabular}
+\end{subtable}
+\hfill
+\begin{subtable}{0.32\linewidth}
+\centering
+\caption{COR Reconstruction}
+\begin{tabular}{cccc}
+\hline
+Metric & $\beta=0.01$ & $\beta=0.05$ & $\beta=0.1$ \\
+\hline
+MSE & 0.000168 & 0.000654 & 0.001308 \\
+\hline
+\end{tabular}
+\end{subtable}
+\hfill
+\caption{Average reconstruction MSE for different values of $\beta$.}
+\label{tab:reconstruction_mse}
+\end{table*}
+
+\end{figure*}
+
+\begin{table*}[h]
+\centering
+\small
+
+\begin{subtable}{0.31\linewidth}
+\centering
+\caption{RAW Reconstruction}
+\begin{tabular}{cccc}
+\toprule
+Metric & $\beta=0.01$ & $\beta=0.05$ & $\beta=0.1$ \\
+\midrule
+MSE & 0.000915 & 0.003942 & 0.003942 \\
+\bottomrule
+\end{tabular}
+\end{subtable}
+\hfill
+
+\begin{subtable}{0.31\linewidth}
+\centering
+\caption{COV Reconstruction}
+\begin{tabular}{cccc}
+\toprule
+Metric & $\beta=0.01$ & $\beta=0.05$ & $\beta=0.1$ \\
+\midrule
+MSE & 0.000189 & 0.000905 & 0.001805 \\
+\bottomrule
+\end{tabular}
+\end{subtable}
+\hfill
+
+\begin{subtable}{0.31\linewidth}
+\centering
+\caption{COR Reconstruction}
+\begin{tabular}{cccc}
+\toprule
+Metric & $\beta=0.01$ & $\beta=0.05$ & $\beta=0.1$ \\
+\midrule
+MSE & 0.000168 & 0.000654 & 0.001308 \\
+\bottomrule
+\end{tabular}
+\end{subtable}
+
+\caption{Average reconstruction MSE for different values of $\beta$.}
+\label{tab:reconstruction_mse}
+\end{table*}
+
+\clearpage
+\title{\textbf{Dimension Reduction Analysis Report}}
+\date{July 2, 2026}
+\section{Objective}
+Perform Random projections on Fundus images and compare the distance between pairs of images between lower-dimensional embeddings and their original images. 
+\section{Methodology}
+In random projection, the original d-dimensional data is projected to a k-dimensional (k << d)  subspace through the origin, using a random $k\times d$ matrix $R \sim \mathcal{N}(0,\frac{I}{\sqrt{k}})$. We project all the images to the k dimensional subspace, varying k from 10 to 800, sample 1000 random pairs and compute the average difference between the pairs in the high dimensional space vs the low dimensional space.
+\section{Results}
+Figure~\ref{fig:errorvsdim_randomproj} plot showing the variation of the error vs the number of dimensions used.
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\linewidth]{plots/error_vs_dim.png}
+    \caption{Average difference of distance between images in lower dimensions vs the original.}
+    \label{fig:errorvsdim_randomproj}
+\end{figure}
+\end{document}
